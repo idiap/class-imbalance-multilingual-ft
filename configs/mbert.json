@@ -1,0 +1,8 @@
+{
+    "model_name":"bert-base-multilingual-cased",
+    "epochs":5,
+    "batch_size":16,
+    "lm_lr":5e-5,
+    "cls_lr":5e-4,
+    "gradient_accumulation_steps":8
+}

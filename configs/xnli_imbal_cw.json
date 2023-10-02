@@ -1,0 +1,20 @@
+{
+    "dataset_path": "./datasets/xnli_fr_en",
+    "train_split": "train_imbal",
+    "val_split": "val_imbal",
+    "test_split": [
+        "test_bal",
+        "test_bal_fr",
+        "test_bal_en",
+        "test_imbal",
+        "test_imbal_fr",
+        "test_imbal_en"
+    ],
+    "label_col": "label",
+    "lang_label_col": "language",
+    "tokenize_pairs": true,
+    "name": "imbalanced",
+    "use_class_weights": true,
+    "wandb_project": "xnli_fr_en",
+    "num_labels": 3
+}

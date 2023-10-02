@@ -1,0 +1,10 @@
+{
+    "en": {
+        "dist": "1:2:3",
+        "switch_with": "fr"
+    },
+    "fr": {
+        "dist": "3:2:1",
+        "switch_with": "en"
+    }
+}

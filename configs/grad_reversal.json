@@ -1,0 +1,6 @@
+{
+    "language_compensation":true,
+    "entropy_max_coef":0.0,
+    "gradient_reversal_coef":0.1,
+    "name":"grad_rev_0.1"
+}

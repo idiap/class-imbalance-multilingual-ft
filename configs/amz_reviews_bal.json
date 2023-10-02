@@ -1,0 +1,12 @@
+{
+    "dataset_path":"./datasets/amz_reviews_imbal",
+    "label_col":"stars",
+    "lang_label_col":"language",
+    "text_col":"review_body",
+    "num_labels":5,
+    "name":"amz_bal",
+    "wandb_project":"amz_reviews",
+    "train_split":"train_bal",
+    "val_split":"val_bal",
+    "test_split":["test_orig", "test_orig_de", "test_orig_fr", "test_orig_es", "test_orig_en", "test_orig_ja", "test_orig_zh"]
+}

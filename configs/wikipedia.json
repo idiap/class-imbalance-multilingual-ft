@@ -1,0 +1,7 @@
+{
+    "dataset_path": "./datasets/wikipedia_lid.hf",
+    "label_col":"language",
+    "lang_label_col":"language",
+    "wandb_project":"wikipedia_lid",
+    "num_labels":3
+}

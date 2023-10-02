@@ -1,0 +1,9 @@
+{
+    "language_compensation":true,
+    "freeze_lm":true,
+    "epochs":1,
+    "entropy_max_coef":0.0,
+    "gradient_reversal_coef":0.0,
+    "name":"only_lid",
+    "metric_for_best_model":"val_lang_loss"
+}

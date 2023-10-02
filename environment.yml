@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: Copyright © 2023 Idiap Research Institute <contact@idiap.ch>
+# SPDX-FileContributor: Vincent Jung <vincent.jung@idiap.ch>
+#
+# SPDX-License-Identifier: GPL-3.0-only
+
+name: lang-imbal
+channels:
+  - defaults
+  - conda-forge
+  - pytorch
+  - nvidia
+dependencies:
+  - conda-build
+  - setuptools
+  - python=3.11
+  - pytorch
+  - pytorch-cuda=11.8
+  - torchaudio
+  - torchvision
+  - pytorch-lightning
+  - transformers
+  - sentence-transformers
+  - datasets
+  - tokenizers
+  - accelerate
+  - scipy
+  - matplotlib
+  - seaborn
+  - sqlite
+  - tqdm
+  - h5py
+  - wandb
+  - shap
+  - pip
+  - numpy
+  - scikit-learn
+  - scikit-learn-intelex
+  - pip:
+    - apache-beam

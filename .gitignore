@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: Copyright © 2023 Idiap Research Institute <contact@idiap.ch>
+# SPDX-FileContributor: Vincent Jung <vincent.jung@idiap.ch>
+#
+# SPDX-License-Identifier: GPL-3.0-only
+
+# Files
+notebooks/*.csv
+notebooks_old/*.csv
+embeddings.table.json
+model_without_adapters.pt
+*.pck
+*.pkl
+*.png
+
+# Folders
+.vscode
+__pycache__
+bash_scripts
+wandb
+job_error
+job_log
+lightning_logs
+scripts/__pycache__
+scripts/lang_entropy
+scripts/speech_cls
+scripts/wandb
+scripts_old
+notebooks_old
+plots
+preds
+shap_values
+shap_values_old
+models
+datasets
