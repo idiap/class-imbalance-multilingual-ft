@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright © 2023 Idiap Research Institute <contact@idiap.ch>
+# SPDX-FileCopyrightText: Copyright © 2024 Idiap Research Institute <contact@idiap.ch>
 # SPDX-FileContributor: Vincent Jung <vincent.jung@idiap.ch>
 #
 # SPDX-License-Identifier: GPL-3.0-only
@@ -9,6 +9,7 @@ import warnings
 import numpy as np
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 from sklearn.metrics import balanced_accuracy_score
+
 
 
 class HFModelForPl(pl.LightningModule):
@@ -23,9 +24,9 @@ class HFModelForPl(pl.LightningModule):
     def __init__(
         self,
         model_name,
-        model_kwargs=None,
+        model_kwargs={},
         tokenizer=None,
-        tokenizer_kwargs=None,
+        tokenizer_kwargs={},
         pretrain_lid_head=0,
         train_lm=True,
         lm_lr=5e-5,
@@ -38,6 +39,8 @@ class HFModelForPl(pl.LightningModule):
         gradient_reversal_coef=0.0,
         gradient_accumulation_steps=1,
         test_dataset_names=None,
+        mask_entropy_max=False,
+        mask_entropy_max_coef = 0.0,
     ):
         super().__init__()
         self.save_hyperparameters()
@@ -76,10 +79,15 @@ class HFModelForPl(pl.LightningModule):
                 model_name, **tokenizer_kwargs
             )
 
-        self.lid_head = torch.nn.Linear(
-            self.lm.config.hidden_size, self.lm.config.num_lang_labels
-        )
-        # self.lid_head.weight.register_hook(lambda x: print("grad of lid", x))
+        if "num_lang_labels" in self.lm.config.to_dict():
+            self.lid_head = torch.nn.Linear(
+                self.lm.config.hidden_size, self.lm.config.num_lang_labels
+            )
+        else:
+            # This is just a placeholder
+            self.lid_head = torch.nn.Linear(
+                self.lm.config.hidden_size, 1
+            )
 
     def forward(self, **kwargs):
         kwargs["output_hidden_states"] = True
@@ -89,7 +97,33 @@ class HFModelForPl(pl.LightningModule):
         self.unfreeze_lm()
         self.unfreeze_cls()
         self.unfreeze_lid()
+
+        if self.hparams.mask_entropy_max:
+            # We add a row to the input with only mask tokens
+
+            kwargs["input_ids"] = torch.cat(
+                [kwargs["input_ids"], (kwargs["input_ids"][-1] != self.tokenizer.pad_token_id) * self.tokenizer.mask_token_id], dim=0
+            )
+            kwargs["attention_mask"] = torch.cat(
+                [kwargs["attention_mask"], kwargs["attention_mask"][-1]], dim=0
+            )
+
+            if "token_type_ids" in kwargs:
+                kwargs["token_type_ids"] = torch.cat(
+                    [kwargs["token_type_ids"], kwargs["token_type_ids"][-1]], dim=0
+                )
+
         output = self.lm(**kwargs)
+
+        if self.hparams.mask_entropy_max:
+            # We pop the last row of the output
+            output_mask = output["logits"][-1, :]
+            output["logits"] = output["logits"][:-1, :]
+            output["hidden_states"] = [hs[:-1, :, :] for hs in output["hidden_states"]]
+
+            distribution = output_mask.softmax(dim=-1)
+            output["mask_entropy_loss"] = (distribution * distribution.log()).mean().mul(self.hparams.mask_entropy_max_coef)
+
         if labels is not None:
             if self.hparams.class_weight is not None:
                 assert lang_label is not None
@@ -98,10 +132,6 @@ class HFModelForPl(pl.LightningModule):
                     idx_lang = lang_label.squeeze() == lang_id
                     if not idx_lang.any():
                         continue
-                    print(idx_lang)
-                    print(output.logits.shape)
-                    print(labels[idx_lang].shape)
-                    print(self.class_weight[lang_id.item()].shape)
                     losses.append(
                         torch.nn.functional.cross_entropy(
                             output.logits[idx_lang, :],
@@ -110,8 +140,6 @@ class HFModelForPl(pl.LightningModule):
                             reduction="none",
                         )
                     )
-                    print("shape of loss", losses[-1].shape)
-                print("shape of stacked loss", torch.cat(losses).shape)
                 loss = torch.cat(losses).mean()
             else:
                 loss = torch.nn.functional.cross_entropy(
@@ -148,17 +176,14 @@ class HFModelForPl(pl.LightningModule):
                 outputs.logits.argmax(dim=-1).cpu().numpy(),
             ),
         }
+        if self.hparams.mask_entropy_max:
+            dict_log["train_mask_entropy_loss"] = outputs.mask_entropy_loss
+            loss += outputs.mask_entropy_loss
+
         optim_lm, optim_lid = self.optimizers()
         scheduler_lm, scheduler_lid = self.lr_schedulers()
 
         if self.hparams.language_cls:
-            # Print grad of BERT before and after this loss because they should not change
-            # print("################# LID loss #################")
-            # print(
-            #     "grad of bert before",
-            #     self.lm.bert.encoder.layer[11].output.dense.weight.grad,
-            # )
-            # print("grad of lid before", self.lid_head.weight.grad)
             if self.hparams.entropy_max_coef > 0:
                 entropy_loss = (
                     outputs.lang_logits.softmax(dim=-1)
@@ -173,22 +198,13 @@ class HFModelForPl(pl.LightningModule):
             )
             if self.hparams.gradient_reversal_coef > 0:
                 loss -= self.hparams.gradient_reversal_coef * lang_loss
-            # print("Is lid leaf ?", self.lid_head.weight.is_leaf)
-            # print("Lang loss", lang_loss / self.hparams.gradient_accumulation_steps)
             self.manual_backward(
                 lang_loss / self.hparams.gradient_accumulation_steps, retain_graph=True
             )
-            # print(
-            #     "grad of bert after",
-            #     self.lm.bert.encoder.layer[11].output.dense.weight.grad,
-            # )
-            # print("grad of lid after", self.lid_head.weight.grad)
-
             if (batch_idx + 1) % self.hparams.gradient_accumulation_steps == 0:
                 self.freeze_lm()
                 self.freeze_cls()
                 self.unfreeze_lid()
-                # print("Taking step")
                 optim_lid.step()
                 optim_lid.zero_grad()
                 scheduler_lid.step()
@@ -201,29 +217,17 @@ class HFModelForPl(pl.LightningModule):
                 .mean()
             )
 
-        # print("################# LM loss #################")
-        # print(
-        #     "grad of bert before", self.lm.bert.encoder.layer[11].output.dense.weight.grad,
-
-        # )
-        # print("grad of lid before", self.lid_head.weight.grad)
         if self.hparams.train_lm:
             self.unfreeze_lm()
             self.unfreeze_cls()
             self.freeze_lid()
-            # Print grad of LID head before and after this loss because they should not change
             self.manual_backward(loss / self.hparams.gradient_accumulation_steps)
             self.unfreeze_lid()
-
-            # print("Loss", loss / self.hparams.gradient_accumulation_steps)
-            # print("grad of bert after", self.lm.bert.encoder.layer[11].output.dense.weight.grad)
-            # print("grad of lid after", self.lid_head.weight.grad)
 
             if (batch_idx + 1) % self.hparams.gradient_accumulation_steps == 0 and not (
                 batch_idx < self.hparams.pretrain_lid_head
             ):
                 self.freeze_lid()
-                # print("Taking step")
                 optim_lm.step()
                 optim_lm.zero_grad()
                 scheduler_lm.step()
@@ -239,23 +243,22 @@ class HFModelForPl(pl.LightningModule):
             "val_acc": (outputs.logits.argmax(dim=-1) == batch["labels"].squeeze())
             .float()
             .mean(),
-            "val_lang_acc": (
-                outputs.lang_logits.argmax(dim=-1) == batch["lang_label"].squeeze()
-            )
-            .float()
-            .mean(),
-            "val_lang_loss": torch.nn.functional.cross_entropy(
-                outputs.lang_logits, batch["lang_label"].squeeze(), reduction="mean"
-            ),
-            "val_lang_bal_acc": balanced_accuracy_score(
-                batch["lang_label"].squeeze().cpu().numpy(),
-                outputs.lang_logits.argmax(dim=-1).cpu().numpy(),
-            ),
             "val_bal_acc": balanced_accuracy_score(
                 batch["labels"].squeeze().cpu().numpy(),
                 outputs.logits.argmax(dim=-1).cpu().numpy(),
             ),
         }
+        if self.hparams.language_cls:
+            dict_log["val_lang_acc"] = (
+                outputs.lang_logits.argmax(dim=-1) == batch["lang_label"].squeeze()
+            ).float().mean()
+            dict_log["val_lang_loss"] = torch.nn.functional.cross_entropy(
+                outputs.lang_logits, batch["lang_label"].squeeze(), reduction="mean"
+            )
+            dict_log["val_lang_bal_acc"] = balanced_accuracy_score(
+                batch["lang_label"].squeeze().cpu().numpy(),
+                outputs.lang_logits.argmax(dim=-1).cpu().numpy(),
+            ),
         self.log_dict(dict_log, on_epoch=True)
 
     def test_step(self, batch, batch_idx, dataloader_idx=None):
@@ -265,16 +268,15 @@ class HFModelForPl(pl.LightningModule):
             "test_acc": (outputs.logits.argmax(dim=-1) == batch["labels"].squeeze())
             .float()
             .mean(),
-            "test_lang_acc": (
-                outputs.lang_logits.argmax(dim=-1) == batch["lang_label"].squeeze()
-            )
-            .float()
-            .mean(),
             "test_bal_acc": balanced_accuracy_score(
                 batch["labels"].squeeze().cpu().numpy(),
                 outputs.logits.argmax(dim=-1).cpu().numpy(),
             ),
         }
+        if self.hparams.language_cls:
+            dict_log["test_lang_acc"] = (
+                outputs.lang_logits.argmax(dim=-1) == batch["lang_label"].squeeze()
+            ).float().mean(),
         add_dataloader_idx = True
         if self.hparams.test_dataset_names is not None and dataloader_idx is not None:
             add_dataloader_idx = False
@@ -288,11 +290,11 @@ class HFModelForPl(pl.LightningModule):
         self.log_dict(dict_log, on_epoch=True, add_dataloader_idx=add_dataloader_idx)
 
     def freeze_lm(self):
-        for params in self.lm.bert.parameters():
+        for params in self.lm.base_model.parameters():
             params.requires_grad = False
 
     def unfreeze_lm(self):
-        for params in self.lm.bert.parameters():
+        for params in self.lm.base_model.parameters():
             params.requires_grad = True
 
     def freeze_lid(self):
@@ -316,7 +318,7 @@ class HFModelForPl(pl.LightningModule):
         optimizers.append(
             torch.optim.RAdam(
                 [
-                    {"params": self.lm.bert.parameters(), "lr": self.hparams.lm_lr},
+                    {"params": self.lm.base_model.parameters(), "lr": self.hparams.lm_lr},
                     {
                         "params": self.lm.classifier.parameters(),
                         "lr": self.hparams.cls_lr,
