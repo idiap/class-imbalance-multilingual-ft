@@ -1,11 +1,15 @@
-# SPDX-FileCopyrightText: Copyright © 2023 Idiap Research Institute <contact@idiap.ch>
+# SPDX-FileCopyrightText: Copyright © 2024 Idiap Research Institute <contact@idiap.ch>
 # SPDX-FileContributor: Vincent Jung <vincent.jung@idiap.ch>
 #
 # SPDX-License-Identifier: GPL-3.0-only
-
+"""
+This script creates a dataset from the Wikipedia dataset for each language specified in the languages list.
+We select a fixed number of samples for each language and concatenate them into a single dataset. We also add a language label to each sample.
+The resulting dataset is saved in the output_dir in huggingface format.
+By default, the script saves 1000 samples for each language. We use this dataset to measure language identification in the latent space of our models.
+"""
 import datasets
 import argparse
-import os
 
 languages = [
     "af",
@@ -43,6 +47,7 @@ languages = [
     "zh",
 ]
 
+
 def parse_args():
     argparser = argparse.ArgumentParser()
     argparser.add_argument("--output_dir", type=str, default="./datasets")
@@ -50,6 +55,7 @@ def parse_args():
     argparser.add_argument("--num_samples", type=int, default=1000)
     args = argparser.parse_args()
     return args
+
 
 def main():
 
@@ -76,6 +82,7 @@ def main():
 
     # save the dataset in huggingface format
     wikipedia.save_to_disk(args.output_dir)
+
 
 if __name__ == "__main__":
     main()

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright © 2023 Idiap Research Institute <contact@idiap.ch>
+# SPDX-FileCopyrightText: Copyright © 2024 Idiap Research Institute <contact@idiap.ch>
 # SPDX-FileContributor: Vincent Jung <vincent.jung@idiap.ch>
 #
 # SPDX-License-Identifier: GPL-3.0-only
@@ -25,7 +25,7 @@ def parse_args():
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset_name", type=str, default="data/xnli")
+    parser.add_argument("--dataset_name", type=str, default="xnli")
     parser.add_argument(
         "--output_dir", type=str, required=True, help="The output directory"
     )

@@ -1,24 +1,26 @@
-# SPDX-FileCopyrightText: Copyright © 2023 Idiap Research Institute <contact@idiap.ch>
+# SPDX-FileCopyrightText: Copyright © 2024 Idiap Research Institute <contact@idiap.ch>
 # SPDX-FileContributor: Vincent Jung <vincent.jung@idiap.ch>
 #
 # SPDX-License-Identifier: GPL-3.0-only
 
 """
-This script creates an imbalanced version of the XNLI dataset. The languages are balanced, the overall labels are balanced,
-but the labels within each language are imbalanced. The imbalance is created by subsampling. The number of examples
-in each language is specified by the `total_size` argument. The seed is specified by the `seed`.
-We use a config file to specify the imbalance. The config file is a json file with the following format:
+This script creates an imbalanced version of the Amazon reviews dataset.
+The languages are balanced, the overall labels are balanced, but the labels within each language
+are imbalanced. The imbalance is created by subsampling. The number of examples in each language 
+is specified by the `total_size` argument. The seed is specified by the `seed`. We use a config 
+file to specify the imbalance. The config file is a json file with the following format:
 {
     "en": "1:2:3",
     "fr": "3:1:2",
     "es": "2:3:1",
     ...
 }
-Where the numbers specify the ratio of each label. The labels are "contradiction", "entailment", and "neutral".
+Where the numbers specify the ratio of each label.
+The labels are "contradiction", "entailment", and "neutral".
 """
-import datasets
-import pandas as pd
 import json
+
+import datasets
 
 
 def parse_args():
@@ -34,7 +36,7 @@ def parse_args():
     parser.add_argument(
         "--config_file",
         type=str,
-        default="./config_aws_imbal.json",
+        default="./config_amz_imbal.json",
     )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--label_col", type=str, default="label")
