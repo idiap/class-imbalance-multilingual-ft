@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright © 2023 Idiap Research Institute <contact@idiap.ch>
+# SPDX-FileCopyrightText: Copyright © 2024 Idiap Research Institute <contact@idiap.ch>
 # SPDX-FileContributor: Vincent Jung <vincent.jung@idiap.ch>
 #
 # SPDX-License-Identifier: GPL-3.0-only
@@ -8,35 +8,29 @@ from sklearnex import patch_sklearn
 patch_sklearn()
 from sklearn.manifold import TSNE
 from sklearn.decomposition import PCA
-from sklearn.cluster import KMeans
 from sklearn.linear_model import LogisticRegressionCV
-from sklearn.metrics import v_measure_score
 from tqdm import tqdm
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.special import softmax
+from pytorch_lightning import seed_everything
 import seaborn as sns
 import datasets
 import pickle
 import os
+import json
 
-# from optimum.pipelines import pipeline
 from transformers import (
     AutoModel,
-    pipeline,
-    AutoModelForSequenceClassification,
     AutoTokenizer,
 )
 import wandb
-import sys
 
 import hfpl
 from hfpl import HFModelForPl
 import argparse
 import torch
 from torch import inference_mode
-from transformers import AutoModel, AutoTokenizer, AutoModelForSequenceClassification
 from transformers.pipelines import FeatureExtractionPipeline
 
 
@@ -45,12 +39,17 @@ class PoolerFeatureExtractionPipeline(FeatureExtractionPipeline):
         if return_tensors:
             return model_outputs[1]
         if self.framework == "pt":
-            return model_outputs[1].tolist()
+            if "pooler_output" in model_outputs:
+                return model_outputs.pooler_output.tolist()
+            else:
+                return model_outputs.last_hidden_state[:, 0].tolist()
         elif self.framework == "tf":
             return model_outputs[1].numpy().tolist()
 
+
 def main():
     args = parse_args()
+    seed_everything(args.seed)
 
     # Load the dataset
     dataset = datasets.load_from_disk(
@@ -58,24 +57,30 @@ def main():
     )
     if args.dataset_split is not None:
         dataset = dataset[args.dataset_split]
+    dataset_name = args.dataset_path.split("/")[-1] + (
+        "_" + args.dataset_split if args.dataset_split is not None else ""
+    )
     dataset = dataset.shuffle(seed=0)
     if args.subsample is not None:
         dataset = dataset.select(range(args.subsample))
 
     if args.languages is not None:
+        print(f"Languages present in the dataset: {np.unique(dataset[args.label_col])}")
+        print(f"Languages to keep: {args.languages}")
         dataset = dataset.filter(lambda x: x[args.label_col] in args.languages)
 
     if torch.cuda.is_available():
         device = torch.device(torch.cuda.current_device())
     else:
         device = torch.device("cpu")
+
     # Load the language identification pipeline
     if args.pl_model_path is not None:
-        model_name = args.pl_model_path.split("/")[-1]
+        model_name = "/".join(args.pl_model_path.split("/")[-3:])
         model_pl = HFModelForPl.load_from_checkpoint(
             args.pl_model_path, map_location=device
         )
-        model = model_pl.lm.bert
+        model = model_pl.lm.base_model
         tokenizer = AutoTokenizer.from_pretrained(model.config._name_or_path)
         lid = PoolerFeatureExtractionPipeline(
             model=model,
@@ -96,9 +101,40 @@ def main():
     elif args.model_name is not None:
         model_name = args.model_name
         lid = PoolerFeatureExtractionPipeline(
+            model=model_name,
             device=device,
             tokenize_kwargs={"truncation": True},
         )
+    elif args.model_folder is not None:
+        files_in_folder = os.listdir(args.model_folder)
+        # find checkpoint, raise error if there are multiple
+        checkpoints = [f for f in files_in_folder if f.endswith(".ckpt")]
+        if len(checkpoints) > 1:
+            raise ValueError("Multiple checkpoints found in folder")
+        elif len(checkpoints) == 0:
+            raise ValueError("No checkpoint found in folder")
+        else:
+            model_pl = HFModelForPl.load_from_checkpoint(
+                os.path.join(args.model_folder, checkpoints[0]), map_location=device
+            )
+            model = model_pl.lm.base_model
+            tokenizer = AutoTokenizer.from_pretrained(model.config._name_or_path)
+            lid = PoolerFeatureExtractionPipeline(
+                model=model,
+                device=device,
+                tokenizer=tokenizer,
+                tokenize_kwargs={"truncation": True},
+            )
+            model_name = model_pl.lm.config._name_or_path
+
+            if "args.json" not in files_in_folder:
+                raise ValueError("No args.json file found in folder")
+            else:
+                args_training = json.load(
+                    open(os.path.join(args.model_folder, "args.json"))
+                )
+                print("Using wandb run name and id from training")
+
     elif args.load_embeddings is None:
         raise ValueError(
             "Either model_path, model_name or load_embeddings must be provided"
@@ -121,14 +157,6 @@ def main():
                     embeddings.append(lid(sample[args.text_col])[0])
 
     else:
-        name_save_embeddings = (
-            os.path.join(
-                args.output_path,
-                "embeddings",
-                args.wandb_run_name + f"{model_name}_embeddings.pkl",
-            ),
-        )
-        # assert args.load_embeddings == name_save_embeddings, "The pickle path must be the same as the one used to save the embeddings"
         model_name = args.load_embeddings.split("/")[-1]
         embeddings = pickle.load(open(args.load_embeddings, "rb"))
 
@@ -143,23 +171,55 @@ def main():
                     os.path.join(
                         args.output_path,
                         "embeddings",
-                        args.wandb_run_name + f"{model_name}_embeddings.pkl",
+                        args.name + f"{model_name}_embeddings.pkl",
                     ),
                     "wb",
                 ),
             )
         else:
             print(
-                "Cannot save embeddings if load_embeddings is provided (embeddings are already saved)"
+                "Cannot save embeddings if load_embeddings is provided (embeddings already saved)"
             )
 
-    wandb.init(
-        project=args.wandb_project,
-        name=args.wandb_run_name,
-        config={
-            "model_name": model_name,
-        },
-    )
+    if args.wandb_project is not None:
+        using_wandb = True
+        wandb.init(
+            project=(
+                args_training["wandb_project"]
+                if args.model_folder is not None
+                else args.wandb_project
+            ),
+            name=args.name if args.name is not None else model_name,
+            config={
+                "model_name": model_name,
+            },
+            id=(
+                args_training["wandb_id"]
+                if args.model_folder is not None
+                else args.wandb_id if args.wandb_id is not None else None
+            ),
+        )
+    else:
+        # If wandb_project is None then we are not using wandb
+        using_wandb = False
+        # Instead writing the results to a file in the folder where the model is saved
+        if args.model_folder is not None:
+            out_path_res = os.path.join(
+                args.model_folder, f"results_{dataset_name}.txt"
+            )
+        elif args.pl_model_path is not None:
+            out_path_res = os.path.join(
+                os.path.dirname(args.pl_model_path), f"results_{dataset_name}.txt"
+            )
+        elif args.model_path is not None:
+            out_path_res = os.path.join(
+                os.path.dirname(args.model_path), f"results_{dataset_name}.txt"
+            )
+        else:
+            raise ValueError("model_folder or model_path must be provided")
+        file_res = open(out_path_res, "w")
+
+    model.eval()
 
     # Trying to predict the language from the embeddings using a logistic regression and CV
     # X = np.array([e[0][0] for e in embeddings])
@@ -173,23 +233,28 @@ def main():
         cv=5,
         multi_class="ovr" if args.ovr else "multinomial",
     ).fit(X, y)
-    # Save average of the scores across folds
-    # wandb.log({"logreg_cv_score": clf.scores_})
 
-    # If args.ovr is not true then the score is the same for all languages and there is no need to log the score for each language
+    # If args.ovr is not true then the score is the same for all languages
+    # Thus, there is no need to log the score for each language
     if not args.ovr:
         scores = clf.scores_
         mean_across_l = np.array(list(scores.values())).mean(axis=1)
-        wandb.log({"logreg_cv_score": mean_across_l.mean()})
-        wandb.log({"logreg_cv_score_std": mean_across_l.std()})
+        if using_wandb:
+            wandb.log({f"{dataset_name}/logreg_cv_score": mean_across_l.mean()})
+            wandb.log({f"{dataset_name}/logreg_cv_score_std": mean_across_l.std()})
+        else:
+            file_res.write(f"Logreg CV score: {mean_across_l.mean()}\n")
+            file_res.write(f"Logreg CV score std: {mean_across_l.std()}\n")
     else:
         dict_mean = {k: np.mean(score) for k, score in clf.scores_.items()}
-        wandb.log(
-            wandb.Table(columns=list(dict_mean.keys()), data=list(dict_mean.values()))
-        )
-        # for l, score in clf.scores_.items():
-        #     wandb.log({f"logreg_cv_score_{l}": np.mean(score)})
-        #     wandb.log({f"logreg_cv_score_std_{l}": np.std(score)})
+        if using_wandb:
+            wandb.log(
+                wandb.Table(
+                    columns=list(dict_mean.keys()), data=list(dict_mean.values())
+                )
+            )
+        else:
+            file_res.write(f"Logreg CV score: {dict_mean}\n")
 
     if args.upload_embeddings:
         # Create a dataframe with the embeddings and the corresponding language
@@ -213,7 +278,8 @@ def main():
                     df_ebd[f"preds_{c}"] = preds[:, c]
             print(df_ebd.head(10))
         # Save the embeddings
-        wandb.log({"embeddings": wandb.Table(dataframe=df_ebd)})
+        if using_wandb:
+            wandb.log({"lang_id/embeddings": wandb.Table(dataframe=df_ebd)})
 
     # Reduce the dimensionality of the embeddings
     if args.dim_red == "TSNE":
@@ -222,27 +288,11 @@ def main():
         dim_red = PCA(n_components=2)
     else:
         raise ValueError("dim_red must be either TSNE or PCA")
-    embeddings_dimred = dim_red.fit_transform(X)
-
-    # Clustering
-    df = pd.DataFrame(embeddings_dimred, columns=[0, 1])
-    df["language"] = dataset[args.label_col]
-    v_measures = []
-    for rand_state in range(10):
-        kmeans = KMeans(
-            n_clusters=df["language"].nunique(), random_state=rand_state, n_init="auto"
-        ).fit(df[[0, 1]])
-        df["cluster"] = kmeans.labels_
-        v_measures.append(v_measure_score(df["language"], df["cluster"]))
-
-    # Save the clustering scores
-    wandb.log({"v_measure": np.mean(v_measures)})
-    wandb.log({"v_measure_std": np.std(v_measures)})
 
     # Plot the embeddings using t-SNE
     if args.produce_plot:
         if args.subsample_for_plot is not None:
-            df = df.sample(args.subsample_for_plot, random_state=args.seed)
+            df_ebd = df_ebd.sample(args.subsample_for_plot, random_state=args.seed)
         plt.figure(figsize=(10, 10))
         if (
             (args.draw_decision_boundary)
@@ -258,18 +308,24 @@ def main():
                 .detach()
                 .numpy(),
                 pca=dim_red,
-                x_min=df[0].min() - 0.1 * (df[0].max() - df[0].min()),
-                x_max=df[0].max() + 0.1 * (df[0].max() - df[0].min()),
-                y_min=df[1].min() - 0.1 * (df[1].max() - df[1].min()),
-                y_max=df[1].max() + 0.1 * (df[1].max() - df[1].min()),
+                x_min=df_ebd[0].min() - 0.1 * (df_ebd[0].max() - df_ebd[0].min()),
+                x_max=df_ebd[0].max() + 0.1 * (df_ebd[0].max() - df_ebd[0].min()),
+                y_min=df_ebd[1].min() - 0.1 * (df_ebd[1].max() - df_ebd[1].min()),
+                y_max=df_ebd[1].max() + 0.1 * (df_ebd[1].max() - df_ebd[1].min()),
                 n_points=1000,
             )
 
-        sns.scatterplot(data=df, x=0, y=1, hue="language", alpha=0.5)
-        name = args.wandb_run_name if args.wandb_run_name is not None else model_name
-        out_path = os.path.join(args.output_path, "plots", f"{name}_{args.dim_red}.png")
-        plt.savefig(out_path)
-    wandb.finish()
+        sns.scatterplot(data=df_ebd, x=0, y=1, hue="language", alpha=0.5)
+        name = args.name if args.name is not None else model_name
+        out_path_plot = os.path.join(
+            args.output_path, "plots", f"{name}_{args.dim_red}.png"
+        )
+        plt.savefig(out_path_plot)
+
+    if using_wandb:
+        wandb.finish()
+    else:
+        file_res.close()
 
 
 def parse_args():
@@ -277,7 +333,14 @@ def parse_args():
     model = parser.add_mutually_exclusive_group(required=True)
     model.add_argument("--pl_model_path", type=str, default=None)
     model.add_argument("--model_path", type=str, default=None)
-    model.add_argument("--model_name", type=str, default="bert-base-multilingual-cased")
+    model.add_argument("--model_name", type=str, default=None)
+    model.add_argument(
+        "--model_folder",
+        type=str,
+        default=None,
+        help="""Path to folder containing the model 
+                and the args.json file as produced by fine_tune_w_pl.py""",
+    )
     parser.add_argument("--load_embeddings", type=str, default=None)
     parser.add_argument("--dataset_split", type=str, default=None)
     parser.add_argument(
@@ -296,8 +359,9 @@ def parse_args():
     parser.add_argument("--ovr", action="store_true")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--languages", type=str, nargs="+", default=None)
-    parser.add_argument("--wandb_project", type=str, default="posterior_lang_analysis")
-    parser.add_argument("--wandb_run_name", type=str, default=None)
+    parser.add_argument("--wandb_project", type=str, default=None)
+    parser.add_argument("--wandb_id", type=str, default=None)
+    parser.add_argument("--name", type=str, default=None)
     parser.add_argument("--upload_embeddings", action="store_true")
     parser.add_argument("--tokenize_pairs", nargs=2, default=None)
     parser.add_argument("--save_embeddings", action="store_true")
