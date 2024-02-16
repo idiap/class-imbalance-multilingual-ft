@@ -1,0 +1,4 @@
+{
+    "mask_entropy_max":true,
+    "mask_entropy_max_coef":2
+}

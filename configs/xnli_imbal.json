@@ -13,7 +13,8 @@
     "label_col": "label",
     "lang_label_col": "language",
     "tokenize_pairs": true,
-    "name": "imbalanced",
+    "name": "xnli_imbal",
     "wandb_project": "xnli_fr_en",
-    "num_labels": 3
+    "num_labels": 3,
+    "epochs":3
 }
